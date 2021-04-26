@@ -28,6 +28,7 @@ app.post('/transaction', function (req, res) {
 });
 
 //get the new block with received transactions
+//TODO: Mine only if you have a fixed number of pending transaction (say 1000)
 app.get('/mine', function (req, res) {
     const lastBlock = bitcoin.getLastBlock();
     const previousBlockHash = lastBlock['hash'];
@@ -163,7 +164,7 @@ app.post('/transaction/broadcast', function (req, res) {
         }).
         catch(err => {
             console.log(err);
-            res.json({code:3, endpoint:"/transaction/broadcast", message:err});
+            res.json({ code: 3, endpoint: "/transaction/broadcast", message: err });
         });
 });
 
@@ -181,6 +182,107 @@ app.post('/receive-new-block', function (req, res) {
         res.json({ code: 2, response: "Link hashes doesn't match or the index is not incremental" });
     }
 
+});
+
+//The algorithm may not work properly on this case:
+//I have a length 2 blockchain, and i find a length 3 valid blockchain and a length 4 invalid blockchain.
+//The algorithm will select the length 4 blockchain and will not be able to validate it. 
+//Thus, it's considered that there is no higher valid blockchain than the current one.
+//Solution: check in the forEach, if the current blockchain has higher length than the maximum one, and it is also valid. Otherwise, go further
+//Edit: With the current "then" it should work properly
+app.get('/consensus', function (req, res) {
+    const reqPromises = [];
+    bitcoin.networkNodes.forEach(networkNodeUrl => {
+        const reqOptions = {
+            uri: networkNodeUrl + "/blockchain",
+            method: 'GET',
+            json: true
+        };
+
+        reqPromises.push(reqPromise(reqOptions));
+    });
+
+    Promise.all(reqPromises).
+        then(blockchains => {
+            const currentChainLength = bitcoin.chain.length;
+            let maxChainLength = currentChainLength;
+            let newLongestChain = null;
+            let newPendingTransactions = null;
+
+            blockchains.forEach(blockchain => {
+                //TODO in if:  && bitcoin.chainIsValid(blockchain.chain)
+                if (blockchain.chain.length > maxChainLength && bitcoin.chainIsValid(blockchain.chain)) {
+                    maxChainLength = blockchain.chain.length;
+                    newLongestChain = blockchain.chain;
+                    newPendingTransactions = blockchain.pendingTransactions;
+                }
+            });
+
+            if (!newLongestChain) {
+                res.json({ code: 2, response: "Couldn't find a longer chain or the longer found chain is invalid", chain: bitcoin.chain });
+            } else {
+                bitcoin.chain = newLongestChain;
+                bitcoin.pendingTransactions = newPendingTransactions;
+
+                res.json({ code: 1, response: "Chain has been replaced", chain: bitcoin.chain });
+            }
+        })
+    // .then(blockchains => {
+    //     const currentChainLength = bitcoin.chain.length;
+    //     let maxChainLength = currentChainLength;
+    //     let newLongestChain = null;
+    //     let newPendingTransactions = null;
+
+    //     blockchains.forEach(blockchain => {
+    //         //TODO in if:  && bitcoin.chainIsValid(blockchain.chain)
+    //         if (blockchain.chain.length > maxChainLength) {
+    //             maxChainLength = blockchain.chain.length;
+    //             newLongestChain = blockchain.chain;
+    //             newPendingTransactions = blockchain.pendingTransactions;
+    //         }
+    //     });
+
+    //     if (!newLongestChain || (newLongestChain && !bitcoin.chainIsValid(newLongestChain))) {
+    //         res.json({ code: 2, response: "Couldn't find a longer chain or the longer found chain is invalid", chain: bitcoin.chain });
+    //     } else if (newLongestChain && bitcoin.chainIsValid(newLongestChain)) {
+    //         bitcoin.chain = newLongestChain;
+    //         bitcoin.pendingTransactions = newPendingTransactions;
+
+    //         res.json({code:1, response:"Chain has been replaced", chain:bitcoin.chain});
+    //     }
+    // })
+});
+
+app.get('/block/:blockHash', function (req, res) {
+    const blockHash = req.params.blockHash;
+    let returnedBlock = bitcoin.getBlock(blockHash);
+    if (returnedBlock)
+        res.json({ code: 1, response: "Block found!", block: returnedBlock });
+    else
+        res.json({ code: 2, response: "Couldn't find the block!", block: returnedBlock });
+
+});
+
+app.get('/transaction/:transactionId', function (req, res) {
+    const transactionId = req.params.transactionId;
+    const returnedTransactionObj = bitcoin.getTransaction(transactionId);
+    if (returnedTransactionObj.transaction)
+        res.json({ code: 1, response: "Transaction found!", transaction: returnedTransactionObj.transaction, block:returnedTransactionObj.block });
+    else
+        res.json({ code: 2, response: "Couldn't find the transaction!",  transaction: returnedTransactionObj.transaction, block:returnedTransactionObj.block });
+});
+
+app.get('/address/:address', function (req, res) {
+    const address = req.params.address;
+    const returnedAddressObj = bitcoin.getAddress(address);
+    if (returnedAddressObj.transactions != undefined && returnedAddressObj.transactions.length !== 0)
+        res.json({ code: 1, response: "Address found!", addressData: returnedAddressObj });
+    else
+        res.json({ code: 2, response: "Couldn't find any transaction for this address!", addressData: returnedAddressObj });
+});
+
+app.get('/block-explorer', function (req, res) {
+    res.sendFile('./block-explorer/index.html', { root: __dirname });
 });
 
 app.listen(port, function () {
